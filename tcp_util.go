@@ -24,7 +24,7 @@ type SimpleMemPool struct {
 
 //
 // 创建一个简单内存池，预先申请'memPoolSize'大小的内存，每次分配内存时从中切割出来，直到剩余空间不够分配，再重新申请一块。
-// 参数'maxPackSize'用于限制外部申请内存允许的最大长度，所以这个值必须大于等于'memPoolSize'。
+// 参数'maxPackSize'用于限制外部申请内存允许的最大长度，所以这个值必须小于等于'memPoolSize'。
 //
 func NewSimpleMemPool(memPoolSize, maxPackSize int) (*SimpleMemPool, error) {
 	if maxPackSize > memPoolSize {
