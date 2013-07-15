@@ -2,6 +2,7 @@ package tcputil
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -15,6 +16,11 @@ type TcpGatewayBackend struct {
 	server     *TcpListener
 	links      []*TcpConn
 	linksMutex sync.RWMutex
+	counterOn  bool
+	inPack     uint64
+	inByte     uint64
+	outPack    uint64
+	outByte    uint64
 }
 
 //
@@ -23,6 +29,12 @@ type TcpGatewayBackend struct {
 type TcpGatewayIntput struct {
 	ClientId uint32
 	*TcpInput
+}
+
+type TcpGatewayOutput struct {
+	owner    *TcpGatewayBackend
+	ClientId uint32
+	*TcpOutput
 }
 
 //
@@ -69,6 +81,11 @@ func NewTcpGatewayBackend(addr string, pack int, memPool MemPool, messageHeandle
 
 					if msg == nil {
 						break
+					}
+
+					if this.counterOn {
+						atomic.AddUint64(&this.inPack, uint64(1))
+						atomic.AddUint64(&this.inByte, uint64(len(msg.Data)))
 					}
 
 					messageHeandler(&TcpGatewayIntput{msg.ReadUint32(), msg})
@@ -138,7 +155,7 @@ func (this *TcpGatewayBackend) Close() {
 //
 // 创建一个发送给指定客户端的消息包
 //
-func (this *TcpGatewayBackend) NewPackage(clientId uint32, size int) *TcpOutput {
+func (this *TcpGatewayBackend) NewPackage(clientId uint32, size int) *TcpGatewayOutput {
 	var link = this.getLink(clientId)
 
 	if link == nil {
@@ -146,7 +163,9 @@ func (this *TcpGatewayBackend) NewPackage(clientId uint32, size int) *TcpOutput 
 	}
 
 	// [gateway command](1) + [client id](4) + [real package size](pack) + [real package content](return)
-	return link.NewPackage(1+4+link.pack+size).WriteUint8(_GATEWAY_COMMAND_NONE_).WriteUint32(clientId).WriteUint(link.pack, uint64(size))
+	var output = link.NewPackage(1+4+link.pack+size).WriteUint8(_GATEWAY_COMMAND_NONE_).WriteUint32(clientId).WriteUint(link.pack, uint64(size))
+
+	return &TcpGatewayOutput{this, clientId, output}
 }
 
 //
@@ -160,7 +179,14 @@ func (this *TcpGatewayBackend) DelClient(clientId uint32) {
 	}
 
 	// [gateway command](1) + [client id](4)
-	link.NewPackage(1 + 4).WriteUint8(_GATEWAY_COMMAND_DEL_CLIENT_).WriteUint32(clientId).Send()
+	var output = link.NewPackage(1 + 4).WriteUint8(_GATEWAY_COMMAND_DEL_CLIENT_).WriteUint32(clientId)
+
+	if this.counterOn {
+		atomic.AddUint64(&this.outPack, uint64(1))
+		atomic.AddUint64(&this.outByte, uint64(len(output.buff)))
+	}
+
+	output.Send()
 }
 
 //
@@ -196,7 +222,37 @@ func (this *TcpGatewayBackend) NewBroadcast(clientIds []uint32, size int) *TcpBr
 
 	output.WriteUint(link.pack, uint64(size))
 
-	return &TcpBroadcast{this, output}
+	return &TcpBroadcast{this, idNum, output}
+}
+
+//
+// 开启或关闭计数器
+//
+func (this *TcpGatewayBackend) SetCounter(on bool) {
+	this.counterOn = on
+}
+
+//
+// 获取计数器
+//
+func (this *TcpGatewayBackend) GetCounter() (inPack, inByte, outPack, outByte uint64) {
+	inPack = atomic.LoadUint64(&this.inPack)
+	inByte = atomic.LoadUint64(&this.inByte)
+	outPack = atomic.LoadUint64(&this.outPack)
+	outByte = atomic.LoadUint64(&this.outByte)
+	return
+}
+
+//
+// 重载TcpOutput的发送，统计发包数量
+//
+func (this *TcpGatewayOutput) Send() error {
+	if this.owner.counterOn {
+		atomic.AddUint64(&this.owner.outPack, uint64(1))
+		atomic.AddUint64(&this.owner.outByte, uint64(len(this.TcpOutput.buff)))
+	}
+
+	return this.TcpOutput.Send()
 }
 
 //
@@ -204,6 +260,7 @@ func (this *TcpGatewayBackend) NewBroadcast(clientIds []uint32, size int) *TcpBr
 //
 type TcpBroadcast struct {
 	owner *TcpGatewayBackend
+	idNum int
 	*TcpOutput
 }
 
@@ -216,7 +273,13 @@ func (this *TcpBroadcast) Send() error {
 	for _, link := range this.owner.links {
 		if link != nil {
 			this.TcpOutput.owner = link
+
 			err = this.TcpOutput.Send()
+
+			if this.owner.counterOn {
+				atomic.AddUint64(&this.owner.outPack, uint64(1))
+				atomic.AddUint64(&this.owner.outByte, uint64(len(this.TcpOutput.buff)))
+			}
 		}
 	}
 

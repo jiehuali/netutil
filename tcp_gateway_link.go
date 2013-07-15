@@ -3,6 +3,7 @@ package tcputil
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -18,7 +19,7 @@ type tcpGatewayLink struct {
 	addr           string
 	pack           int
 	conn           *TcpConn
-	clients        map[uint32]*TcpConn
+	clients        map[uint32]*tcpGatewayClient
 	clientsMutex   sync.RWMutex
 	maxClientId    uint32
 	takeClientAddr bool
@@ -49,7 +50,7 @@ func newTcpGatewayLink(owner *TcpGatewayFrontend, backend *TcpGatewayBackendInfo
 		addr:           backend.Addr,
 		pack:           pack,
 		conn:           conn,
-		clients:        make(map[uint32]*TcpConn),
+		clients:        make(map[uint32]*tcpGatewayClient),
 		maxClientId:    beginClientId,
 		takeClientAddr: backend.TakeClientAddr,
 	}
@@ -69,27 +70,42 @@ func newTcpGatewayLink(owner *TcpGatewayFrontend, backend *TcpGatewayBackendInfo
 				var clientId = msg.ReadUint32()
 
 				if client := this.GetClient(clientId); client != nil {
-					client.sendRaw(msg.Data)
+					if this.owner.counterOn {
+						atomic.AddUint64(&this.owner.outPack, uint64(1))
+						atomic.AddUint64(&this.owner.outByte, uint64(len(msg.Data)))
+					}
+
+					client.Send(msg.Data)
 				}
 			case _GATEWAY_COMMAND_DEL_CLIENT_:
 				var clientId = msg.ReadUint32()
 
 				if client := this.GetClient(clientId); client != nil {
 					client.Close()
-					this.DelClient(clientId)
 				}
 			case _GATEWAY_COMMAND_BROADCAST_:
 				var (
-					idNum   = int(msg.ReadUint16())
-					realMsg = msg.Data[4*idNum:]
+					idNum       = int(msg.ReadUint16())
+					realMsg     = msg.Data[4*idNum:]
+					realSendNum = 0
 				)
 
 				for i := 0; i < idNum; i++ {
 					var clientId = msg.ReadUint32()
 
 					if client := this.GetClient(clientId); client != nil {
-						client.sendRaw(realMsg)
+						realSendNum += 1
+
+						client.Send(realMsg)
 					}
+				}
+
+				if this.owner.counterOn {
+					var bytes = uint64(realSendNum * len(realMsg))
+					atomic.AddUint64(&this.owner.outPack, uint64(realSendNum))
+					atomic.AddUint64(&this.owner.outByte, bytes)
+					atomic.AddUint64(&this.owner.broPack, uint64(1))
+					atomic.AddUint64(&this.owner.broByte, bytes)
 				}
 			}
 		}
@@ -104,7 +120,7 @@ func (this *tcpGatewayLink) AddClient(client *TcpConn) uint32 {
 
 	this.maxClientId += 1
 
-	this.clients[this.maxClientId] = client
+	this.clients[this.maxClientId] = newTcpGatewayClient(this, this.maxClientId, client)
 
 	return this.maxClientId
 }
@@ -116,7 +132,7 @@ func (this *tcpGatewayLink) DelClient(clientId uint32) {
 	delete(this.clients, clientId)
 }
 
-func (this *tcpGatewayLink) GetClient(clientId uint32) *TcpConn {
+func (this *tcpGatewayLink) GetClient(clientId uint32) *tcpGatewayClient {
 	this.clientsMutex.RLock()
 	defer this.clientsMutex.RUnlock()
 
@@ -148,4 +164,61 @@ func (this *tcpGatewayLink) Close(removeFromFrontend bool) {
 	if removeFromFrontend {
 		this.owner.delLink(this.id)
 	}
+}
+
+type tcpGatewayClient struct {
+	owner    *tcpGatewayLink
+	clientId uint32
+	conn     *TcpConn
+	sendChan chan []byte
+	closed   bool
+}
+
+func newTcpGatewayClient(owner *tcpGatewayLink, clientId uint32, conn *TcpConn) *tcpGatewayClient {
+	var this = &tcpGatewayClient{
+		owner,
+		clientId,
+		conn,
+		make(chan []byte, 100),
+		false,
+	}
+
+	go func() {
+		defer func() {
+			recover()
+
+			if !this.closed {
+				this.Close()
+			}
+		}()
+
+		for {
+			data, ok := <-this.sendChan
+
+			if !ok {
+				break
+			}
+
+			if this.conn.sendRaw(data) != nil {
+				break
+			}
+		}
+	}()
+
+	return this
+}
+
+func (this *tcpGatewayClient) Send(data []byte) {
+	select {
+	case this.sendChan <- data:
+	default:
+		this.Close()
+	}
+}
+
+func (this *tcpGatewayClient) Close() {
+	this.conn.Close()
+	go func() {
+		this.owner.DelClient(this.clientId)
+	}()
 }

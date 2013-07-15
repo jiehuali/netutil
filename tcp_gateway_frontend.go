@@ -2,6 +2,7 @@ package tcputil
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 //
@@ -13,6 +14,13 @@ type TcpGatewayFrontend struct {
 	memPool    MemPool
 	links      map[uint32]*tcpGatewayLink
 	linksMutex sync.RWMutex
+	counterOn  bool
+	inPack     uint64
+	inByte     uint64
+	outPack    uint64
+	outByte    uint64
+	broPack    uint64
+	broByte    uint64
 }
 
 //
@@ -97,6 +105,11 @@ func NewTcpGatewayFrontend(addr string, pack int, memPool MemPool, backends []*T
 					setUint(msg, pack, len(msg)-pack)
 
 					setUint32(msg[pack:], clientId)
+
+					if this.counterOn {
+						atomic.AddUint64(&this.inPack, uint64(1))
+						atomic.AddUint64(&this.inByte, uint64(len(msg)))
+					}
 
 					link.SendToBackend(msg)
 				}
@@ -215,4 +228,24 @@ func (this *TcpGatewayFrontend) Close() {
 	for _, link := range this.links {
 		link.Close(false)
 	}
+}
+
+//
+// 开启或关闭计数器
+//
+func (this *TcpGatewayFrontend) SetCounter(on bool) {
+	this.counterOn = on
+}
+
+//
+// 开启或关闭计数器
+//
+func (this *TcpGatewayFrontend) GetCounter() (inPack, inByte, outPack, outByte, broPack, broByte uint64) {
+	inPack = atomic.LoadUint64(&this.inPack)
+	inByte = atomic.LoadUint64(&this.inByte)
+	outPack = atomic.LoadUint64(&this.outPack)
+	outByte = atomic.LoadUint64(&this.outByte)
+	broPack = atomic.LoadUint64(&this.broPack)
+	broByte = atomic.LoadUint64(&this.broByte)
+	return
 }
