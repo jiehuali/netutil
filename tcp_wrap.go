@@ -10,39 +10,35 @@ import (
 // 面向包协议的监听器，Accept时返回面向包协议的连接实例。
 //
 type TcpListener struct {
-	pack     int
-	padding  int
-	memPool  MemPool
-	listener *net.TCPListener
+	pack        int
+	padding     int
+	maxPackSize int
+	listener    *net.TCPListener
 }
 
 //
 // 基于现有的监听器包装一个面向包协议的监听器。
 // 参数'pack'用于设置消息包的头部长度，消息包长度就存放在其中，所以请根据消息包的最大长度可能性设置此参数，'pack'必须是1, 2, 4或者8。
 // 参数'padding'通常只要设置成0，这个参数用于优化网关通讯，避免不必要的内存分配和数据复制，请参考'Read'方法。
-// 参数'memPool'用于指派一个内存池实现，用于优化通讯协议解析时的内存分配，请参考'SimpleMemPool'类型。
+// 参数'maxPackSize'用于限制包的大小。
 //
-func NewTcpListener(listener *net.TCPListener, pack, padding int, memPool MemPool) (*TcpListener, error) {
+func NewTcpListener(listener *net.TCPListener, pack, padding, maxPackSize int) (*TcpListener, error) {
 	if pack != 1 && pack != 2 && pack != 4 && pack != 8 {
 		return nil, errors.New("pack != 1 && pack != 2 && pack != 4 && pack != 8")
 	}
 
 	return &TcpListener{
-		pack:     pack,
-		padding:  padding,
-		memPool:  memPool,
-		listener: listener,
+		pack:        pack,
+		padding:     padding,
+		maxPackSize: maxPackSize,
+		listener:    listener,
 	}, nil
 }
 
 //
 // 监听指定地址和端口并返回一个基于消息包的监听器，参数说明参考‘NewTcpListener'。
 //
-func Listen(addr string, pack, padding int, memPool MemPool) (*TcpListener, error) {
-	if memPool == nil {
-		return nil, errors.New("memPool == nil")
-	}
-
+func Listen(addr string, pack, padding, maxPackSize int) (*TcpListener, error) {
 	var (
 		err      error
 		listener net.Listener
@@ -52,7 +48,7 @@ func Listen(addr string, pack, padding int, memPool MemPool) (*TcpListener, erro
 		return nil, err
 	}
 
-	return NewTcpListener(listener.(*net.TCPListener), pack, padding, memPool)
+	return NewTcpListener(listener.(*net.TCPListener), pack, padding, maxPackSize)
 }
 
 //
@@ -72,7 +68,7 @@ func (this *TcpListener) Accpet() *TcpConn {
 		return nil
 	}
 
-	var tcpConn, err2 = NewTcpConn(conn, this.pack, this.padding, this.memPool)
+	var tcpConn, err2 = NewTcpConn(conn, this.pack, this.padding, this.maxPackSize)
 
 	if err2 != nil {
 		return nil
@@ -85,58 +81,54 @@ func (this *TcpListener) Accpet() *TcpConn {
 // 面向包协议的网络连接。
 //
 type TcpConn struct {
-	conn    *net.TCPConn
-	pack    int
-	padding int
-	head    []byte
-	memPool MemPool
+	conn        *net.TCPConn
+	pack        int
+	padding     int
+	maxPackSize int
+	head        []byte
 }
 
 //
 // 从现有网络连接包装一个面向包协议的网络连接，参数说明参考‘NewTcpListener'。
 //
-func NewTcpConn(conn *net.TCPConn, pack, padding int, memPool MemPool) (*TcpConn, error) {
+func NewTcpConn(conn *net.TCPConn, pack, padding, maxPackSize int) (*TcpConn, error) {
 	if pack != 1 && pack != 2 && pack != 4 && pack != 8 {
 		return nil, errors.New("pack != 1 && pack != 2 && pack != 4 && pack != 8")
 	}
 
-	if memPool == nil {
-		return nil, errors.New("memPool == nil")
-	}
-
 	return &TcpConn{
-		conn:    conn,
-		pack:    pack,
-		padding: padding,
-		head:    make([]byte, pack),
-		memPool: memPool,
+		conn:        conn,
+		pack:        pack,
+		padding:     padding,
+		maxPackSize: maxPackSize,
+		head:        make([]byte, pack),
 	}, nil
 }
 
 //
 // 连接目标地址，并返回一个面向包协议的连接，参数说明参考'NewTcpListener'。
 //
-func Connect(addr string, pack, padding int, memPool MemPool) (*TcpConn, error) {
+func Connect(addr string, pack, padding, maxPackSize int) (*TcpConn, error) {
 	var conn, err2 = net.Dial("tcp", addr)
 
 	if err2 != nil {
 		return nil, err2
 	}
 
-	return NewTcpConn(conn.(*net.TCPConn), pack, padding, memPool)
+	return NewTcpConn(conn.(*net.TCPConn), pack, padding, maxPackSize)
 }
 
 //
 // 连接网关，参考'Connect'。
 //
-func ConnectGateway(addr string, pack, padding int, memPool MemPool, backendId uint32) (*TcpConn, error) {
+func ConnectGateway(addr string, pack, padding, maxPackSize int, backendId uint32) (*TcpConn, error) {
 	var conn, err1 = net.Dial("tcp", addr)
 
 	if err1 != nil {
 		return nil, err1
 	}
 
-	var tcpConn, err2 = NewTcpConn(conn.(*net.TCPConn), pack, padding, memPool)
+	var tcpConn, err2 = NewTcpConn(conn.(*net.TCPConn), pack, padding, maxPackSize)
 
 	if err2 != nil {
 		return nil, err2
@@ -158,14 +150,20 @@ func (this *TcpConn) Close() error {
 }
 
 //
-// 读取一个消息包，调用会一只阻塞，直到收到完整消息包或者连接断开。
+// 读取一个消息包，调用会一直阻塞，直到收到完整消息包或者连接断开。
 //
 func (this *TcpConn) Read() []byte {
 	if _, err := io.ReadFull(this.conn, this.head); err != nil {
 		return nil
 	}
 
-	var buff = this.memPool.Alloc(this.padding + getUint(this.head, this.pack))
+	var size = getUint(this.head, this.pack)
+
+	if size > this.maxPackSize {
+		return nil
+	}
+
+	var buff = make([]byte, this.padding+size)
 
 	if buff == nil {
 		return nil
@@ -198,7 +196,11 @@ func (this *TcpConn) ReadPackage() *TcpInput {
 // 创建一个用于发送的消息包，消息包内容填充完毕，请调用包实例的'Send'方法发送
 //
 func (this *TcpConn) NewPackage(size int) *TcpOutput {
-	var buff = this.memPool.Alloc(this.pack + size)
+	if size > this.maxPackSize {
+		return nil
+	}
+
+	var buff = make([]byte, this.pack+size)
 
 	if buff == nil {
 		return nil
@@ -212,4 +214,8 @@ func (this *TcpConn) NewPackage(size int) *TcpOutput {
 func (this *TcpConn) sendRaw(msg []byte) error {
 	_, err := this.conn.Write(msg)
 	return err
+}
+
+func (this *TcpConn) SetNoDelay(noDelay bool) error {
+	return this.conn.SetNoDelay(noDelay)
 }

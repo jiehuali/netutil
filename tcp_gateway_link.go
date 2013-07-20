@@ -11,6 +11,7 @@ const (
 	_GATEWAY_COMMAND_ADD_CLIENT_ = 1
 	_GATEWAY_COMMAND_DEL_CLIENT_ = 2
 	_GATEWAY_COMMAND_BROADCAST_  = 3
+	_GATEWAY_MAX_CLIENT_ID_      = 0x00FFFFFF
 )
 
 type tcpGatewayLink struct {
@@ -23,9 +24,10 @@ type tcpGatewayLink struct {
 	clientsMutex   sync.RWMutex
 	maxClientId    uint32
 	takeClientAddr bool
+	closed         int32
 }
 
-func newTcpGatewayLink(owner *TcpGatewayFrontend, backend *TcpGatewayBackendInfo, pack int, memPool MemPool) (*tcpGatewayLink, error) {
+func newTcpGatewayLink(owner *TcpGatewayFrontend, backend *TcpGatewayBackendInfo, pack, maxPackSize int) (*tcpGatewayLink, error) {
 	var (
 		this             *tcpGatewayLink
 		conn             *TcpConn
@@ -34,7 +36,7 @@ func newTcpGatewayLink(owner *TcpGatewayFrontend, backend *TcpGatewayBackendInfo
 		beginClientId    uint32
 	)
 
-	if conn, err = Connect(backend.Addr, pack, 0, memPool); err != nil {
+	if conn, err = Connect(backend.Addr, pack, 0, maxPackSize); err != nil {
 		return nil, err
 	}
 
@@ -54,6 +56,8 @@ func newTcpGatewayLink(owner *TcpGatewayFrontend, backend *TcpGatewayBackendInfo
 		maxClientId:    beginClientId,
 		takeClientAddr: backend.TakeClientAddr,
 	}
+
+	this.conn.SetNoDelay(false)
 
 	go func() {
 		defer this.Close(true)
@@ -114,15 +118,21 @@ func newTcpGatewayLink(owner *TcpGatewayFrontend, backend *TcpGatewayBackendInfo
 	return this, nil
 }
 
-func (this *tcpGatewayLink) AddClient(client *TcpConn) uint32 {
+func (this *tcpGatewayLink) AddClient(conn *TcpConn) *tcpGatewayClient {
 	this.clientsMutex.Lock()
 	defer this.clientsMutex.Unlock()
 
 	this.maxClientId += 1
 
-	this.clients[this.maxClientId] = newTcpGatewayClient(this, this.maxClientId, client)
+	if this.maxClientId == _GATEWAY_MAX_CLIENT_ID_ {
+		this.maxClientId = 0
+	}
 
-	return this.maxClientId
+	var client = newTcpGatewayClient(this, this.maxClientId, conn)
+
+	this.clients[this.maxClientId] = client
+
+	return client
 }
 
 func (this *tcpGatewayLink) DelClient(clientId uint32) {
@@ -152,55 +162,51 @@ func (this *tcpGatewayLink) SendToBackend(msg []byte) error {
 }
 
 func (this *tcpGatewayLink) Close(removeFromFrontend bool) {
-	this.clientsMutex.Lock()
-	defer this.clientsMutex.Unlock()
+	if atomic.CompareAndSwapInt32(&this.closed, 0, 1) {
+		this.conn.Close()
 
-	this.conn.Close()
+		for _, client := range this.clients {
+			client.conn.Close()
+		}
 
-	for _, client := range this.clients {
-		client.Close()
-	}
-
-	if removeFromFrontend {
-		this.owner.delLink(this.id)
+		if removeFromFrontend {
+			this.owner.delLink(this.id)
+		}
 	}
 }
 
 type tcpGatewayClient struct {
-	owner    *tcpGatewayLink
-	clientId uint32
-	conn     *TcpConn
-	sendChan chan []byte
-	closed   bool
+	owner     *tcpGatewayLink
+	id        uint32
+	conn      *TcpConn
+	sendChan  chan []byte
+	closeChan chan int
+	closed    int32
 }
 
-func newTcpGatewayClient(owner *tcpGatewayLink, clientId uint32, conn *TcpConn) *tcpGatewayClient {
+func newTcpGatewayClient(owner *tcpGatewayLink, id uint32, conn *TcpConn) *tcpGatewayClient {
 	var this = &tcpGatewayClient{
 		owner,
-		clientId,
+		id,
 		conn,
-		make(chan []byte, 100),
-		false,
+		make(chan []byte, 1000),
+		make(chan int, 2),
+		0,
 	}
 
+	this.conn.SetNoDelay(false)
+
 	go func() {
-		defer func() {
-			recover()
-
-			if !this.closed {
-				this.Close()
-			}
-		}()
-
+		defer this.Close()
+	L:
 		for {
-			data, ok := <-this.sendChan
-
-			if !ok {
-				break
-			}
-
-			if this.conn.sendRaw(data) != nil {
-				break
+			select {
+			case data := <-this.sendChan:
+				if this.conn.sendRaw(data) != nil {
+					break L
+				}
+			case <-this.closeChan:
+				break L
 			}
 		}
 	}()
@@ -217,8 +223,12 @@ func (this *tcpGatewayClient) Send(data []byte) {
 }
 
 func (this *tcpGatewayClient) Close() {
-	this.conn.Close()
-	go func() {
-		this.owner.DelClient(this.clientId)
-	}()
+	if atomic.CompareAndSwapInt32(&this.closed, 0, 1) {
+		go func() {
+			this.owner.DelClient(this.id)
+			this.owner.SendDelClient(this.id)
+			this.conn.Close()
+			this.closeChan <- 1
+		}()
+	}
 }

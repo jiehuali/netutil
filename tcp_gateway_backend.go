@@ -27,6 +27,7 @@ type TcpGatewayBackend struct {
 // 来自实际客户端的消息，用法跟TcpInput是一样的，区别是多了ClientId
 //
 type TcpGatewayIntput struct {
+	LinkId   int
 	ClientId uint32
 	*TcpInput
 }
@@ -41,8 +42,8 @@ type TcpGatewayOutput struct {
 // 在指定的地址和端口创建一个网关后端，等待网关前端连接。
 // 一个网关后端可以被多个网关前端连接，客户端ID分配算法会保证不同网关前端的客户端ID不冲突。
 //
-func NewTcpGatewayBackend(addr string, pack int, memPool MemPool, messageHeandler func(msg *TcpGatewayIntput)) (*TcpGatewayBackend, error) {
-	var server, err = Listen(addr, pack, 0, memPool)
+func NewTcpGatewayBackend(addr string, pack, maxPackSize int, messageHeandler func(msg *TcpGatewayIntput)) (*TcpGatewayBackend, error) {
+	var server, err = Listen(addr, pack, 0, maxPackSize)
 
 	if err != nil {
 		return nil, err
@@ -76,6 +77,8 @@ func NewTcpGatewayBackend(addr string, pack int, memPool MemPool, messageHeandle
 					this.delLink(linkId)
 				}()
 
+				link.SetNoDelay(false)
+
 				for {
 					var msg = link.ReadPackage()
 
@@ -88,12 +91,12 @@ func NewTcpGatewayBackend(addr string, pack int, memPool MemPool, messageHeandle
 						atomic.AddUint64(&this.inByte, uint64(len(msg.Data)))
 					}
 
-					messageHeandler(&TcpGatewayIntput{msg.ReadUint32(), msg})
+					messageHeandler(&TcpGatewayIntput{linkId, msg.ReadUint32(), msg})
 				}
+
+				messageHeandler(&TcpGatewayIntput{linkId, 0, nil})
 			}()
 		}
-
-		messageHeandler(nil)
 	}()
 
 	return this, nil

@@ -6,15 +6,13 @@ import (
 	"testing"
 )
 
-var memPool, _ = NewSimpleMemPool(1024, 1024)
-
 //
 // 测试基本通讯
 //
 func TestTcpWrap(t *testing.T) {
 	var wg sync.WaitGroup
 
-	var server, err1 = Listen("0.0.0.0:10086", 4, 0, memPool)
+	var server, err1 = Listen("0.0.0.0:10086", 4, 0, 1024)
 
 	if err1 != nil {
 		t.Fatal(err1)
@@ -50,7 +48,7 @@ func TestTcpWrap(t *testing.T) {
 		}
 	}()
 
-	var client, err2 = Connect("127.0.0.1:10086", 4, 0, memPool)
+	var client, err2 = Connect("127.0.0.1:10086", 4, 0, 1024)
 
 	if err2 != nil {
 		t.Fatal(err2)
@@ -81,7 +79,7 @@ func TestTcpWrap(t *testing.T) {
 func TestPadding(t *testing.T) {
 	var wg sync.WaitGroup
 
-	var server, err1 = Listen("0.0.0.0:10086", 4, 2, memPool)
+	var server, err1 = Listen("0.0.0.0:10086", 4, 2, 1024)
 
 	if err1 != nil {
 		t.Fatal(err1)
@@ -113,7 +111,7 @@ func TestPadding(t *testing.T) {
 		}
 	}()
 
-	var client, err2 = Connect("127.0.0.1:10086", 4, 4, memPool)
+	var client, err2 = Connect("127.0.0.1:10086", 4, 4, 1024)
 
 	if err2 != nil {
 		t.Fatal(err2)
@@ -141,7 +139,7 @@ func TestGateway(t *testing.T) {
 	var wg sync.WaitGroup
 
 	var msgChan = make(chan *TcpGatewayIntput)
-	var backend, err1 = NewTcpGatewayBackend("0.0.0.0:10010", 4, memPool, func(msg *TcpGatewayIntput) {
+	var backend, err1 = NewTcpGatewayBackend("0.0.0.0:10010", 4, 1024, func(msg *TcpGatewayIntput) {
 		msgChan <- msg
 	})
 
@@ -197,19 +195,21 @@ func TestGateway(t *testing.T) {
 		closeWait <- 1
 	}()
 
-	var frontend, err2 = NewTcpGatewayFrontend("0.0.0.0:10086", 4, memPool, []*TcpGatewayBackendInfo{{1, "127.0.0.1:10010", false}})
+	var frontend, err2 = NewTcpGatewayFrontend("0.0.0.0:10086", 4, 1024, []*TcpGatewayBackendInfo{
+		{1, "127.0.0.1:10010", false},
+	})
 
 	if err2 != nil {
 		t.Fatal(err2)
 	}
 
-	var client1, err3 = ConnectGateway("0.0.0.0:10086", 4, 0, memPool, 1)
+	var client1, err3 = ConnectGateway("0.0.0.0:10086", 4, 0, 1024, 1)
 
 	if err3 != nil {
 		t.Fatal(err3)
 	}
 
-	var client2, err4 = ConnectGateway("0.0.0.0:10086", 4, 0, memPool, 1)
+	var client2, err4 = ConnectGateway("0.0.0.0:10086", 4, 0, 1024, 1)
 
 	if err4 != nil {
 		t.Fatal(err4)
@@ -256,7 +256,7 @@ func TestTakeClientAddr(t *testing.T) {
 	var wg sync.WaitGroup
 
 	var msgChan = make(chan *TcpGatewayIntput)
-	var backend, err1 = NewTcpGatewayBackend("0.0.0.0:10010", 4, memPool, func(msg *TcpGatewayIntput) {
+	var backend, err1 = NewTcpGatewayBackend("0.0.0.0:10010", 4, 1024, func(msg *TcpGatewayIntput) {
 		msgChan <- msg
 	})
 
@@ -286,13 +286,15 @@ func TestTakeClientAddr(t *testing.T) {
 		closeWait <- 1
 	}()
 
-	var frontend, err2 = NewTcpGatewayFrontend("0.0.0.0:10086", 4, memPool, []*TcpGatewayBackendInfo{{1, "127.0.0.1:10010", true}})
+	var frontend, err2 = NewTcpGatewayFrontend("0.0.0.0:10086", 4, 1024, []*TcpGatewayBackendInfo{
+		{1, "127.0.0.1:10010", true},
+	})
 
 	if err2 != nil {
 		t.Fatal(err2)
 	}
 
-	var client1, err3 = ConnectGateway("0.0.0.0:10086", 4, 0, memPool, 1)
+	var client1, err3 = ConnectGateway("0.0.0.0:10086", 4, 0, 1024, 1)
 
 	if err3 != nil {
 		t.Fatal(err3)

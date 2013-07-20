@@ -9,18 +9,18 @@ import (
 // 网关前端
 //
 type TcpGatewayFrontend struct {
-	server     *TcpListener
-	pack       int
-	memPool    MemPool
-	links      map[uint32]*tcpGatewayLink
-	linksMutex sync.RWMutex
-	counterOn  bool
-	inPack     uint64
-	inByte     uint64
-	outPack    uint64
-	outByte    uint64
-	broPack    uint64
-	broByte    uint64
+	server      *TcpListener
+	pack        int
+	maxPackSize int
+	links       map[uint32]*tcpGatewayLink
+	linksMutex  sync.RWMutex
+	counterOn   bool
+	inPack      uint64
+	inByte      uint64
+	outPack     uint64
+	outByte     uint64
+	broPack     uint64
+	broByte     uint64
 }
 
 //
@@ -46,57 +46,56 @@ type TcpGatewayUpdateResult struct {
 // 在指定地址和端口创建一个网关前端，连接到指定的网关后端，并等待客户端接入。
 // 新接入的客户端首先需要发送一个uint32类型的后端ID，选择客户端实际所要连接的后端。
 //
-func NewTcpGatewayFrontend(addr string, pack int, memPool MemPool, backends []*TcpGatewayBackendInfo) (*TcpGatewayFrontend, error) {
-	server, err := Listen(addr, pack, pack+4, memPool)
+func NewTcpGatewayFrontend(addr string, pack, maxPackSize int, backends []*TcpGatewayBackendInfo) (*TcpGatewayFrontend, error) {
+	server, err := Listen(addr, pack, pack+4, maxPackSize)
 
 	if err != nil {
 		return nil, err
 	}
 
 	var this = &TcpGatewayFrontend{
-		server:  server,
-		pack:    pack,
-		memPool: memPool,
-		links:   make(map[uint32]*tcpGatewayLink),
+		server:      server,
+		pack:        pack,
+		maxPackSize: maxPackSize,
+		links:       make(map[uint32]*tcpGatewayLink),
 	}
 
 	this.UpdateBackends(backends)
 
 	go func() {
 		for {
-			var client = this.server.Accpet()
+			var conn = this.server.Accpet()
 
-			if client == nil {
+			if conn == nil {
 				break
 			}
 
 			go func() {
 				defer func() {
-					client.Close()
+					conn.Close()
 				}()
 
-				var link, clientId = this.clientInit(client)
+				var link, client = this.clientInit(conn)
 
-				if link == nil || clientId == 0 {
+				if link == nil || client == nil {
 					return
 				}
 
 				defer func() {
-					link.DelClient(clientId)
-					link.SendDelClient(clientId)
+					client.Close()
 				}()
 
 				if link.takeClientAddr {
-					var addr = client.conn.RemoteAddr().String()
-					var addrMsg = client.NewPackage(4 + 2 + len(addr))
+					var addr = conn.conn.RemoteAddr().String()
+					var addrMsg = conn.NewPackage(4 + 2 + len(addr))
 
-					addrMsg.WriteUint32(clientId).WriteUint8(uint8(len(addr))).WriteBytes([]byte(addr))
+					addrMsg.WriteUint32(client.id).WriteUint8(uint8(len(addr))).WriteBytes([]byte(addr))
 
 					link.SendToBackend(addrMsg.buff)
 				}
 
 				for {
-					var msg = client.Read()
+					var msg = conn.Read()
 
 					if msg == nil {
 						break
@@ -104,7 +103,7 @@ func NewTcpGatewayFrontend(addr string, pack int, memPool MemPool, backends []*T
 
 					setUint(msg, pack, len(msg)-pack)
 
-					setUint32(msg[pack:], clientId)
+					setUint32(msg[pack:], client.id)
 
 					if this.counterOn {
 						atomic.AddUint64(&this.inPack, uint64(1))
@@ -120,13 +119,13 @@ func NewTcpGatewayFrontend(addr string, pack int, memPool MemPool, backends []*T
 	return this, nil
 }
 
-func (this *TcpGatewayFrontend) clientInit(client *TcpConn) (link *tcpGatewayLink, clientId uint32) {
+func (this *TcpGatewayFrontend) clientInit(conn *TcpConn) (link *tcpGatewayLink, client *tcpGatewayClient) {
 	var (
 		serverIdMsg []byte
 		serverId    uint32
 	)
 
-	if serverIdMsg = client.Read(); len(serverIdMsg) != this.pack+4+4 {
+	if serverIdMsg = conn.Read(); len(serverIdMsg) != this.pack+4+4 {
 		return
 	}
 
@@ -136,9 +135,7 @@ func (this *TcpGatewayFrontend) clientInit(client *TcpConn) (link *tcpGatewayLin
 		return
 	}
 
-	if clientId = link.AddClient(client); clientId == 0 {
-		return
-	}
+	client = link.AddClient(conn)
 
 	return
 }
@@ -204,7 +201,7 @@ func (this *TcpGatewayFrontend) UpdateBackends(backends []*TcpGatewayBackendInfo
 			continue
 		}
 
-		var link, err = newTcpGatewayLink(this, backend, this.pack, this.memPool)
+		var link, err = newTcpGatewayLink(this, backend, this.pack, this.maxPackSize)
 
 		if link != nil {
 			this.addLink(backend.Id, link)
