@@ -1,4 +1,4 @@
-package tcputil
+package netutil
 
 import (
 	"errors"
