@@ -3,16 +3,17 @@ package tcputil
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 //
 // 网关前端
 //
-type TcpGatewayFrontend struct {
-	server      *TcpListener
+type GatewayFrontend struct {
+	server      *Listener
 	pack        int
 	maxPackSize int
-	links       map[uint32]*tcpGatewayLink
+	links       map[uint32]*GatewayLink
 	linksMutex  sync.RWMutex
 	counterOn   bool
 	inPack      uint64
@@ -26,18 +27,21 @@ type TcpGatewayFrontend struct {
 //
 // 网关后端信息
 //
-type TcpGatewayBackendInfo struct {
+type GatewayBackendInfo struct {
 	Id             uint32 // 后端ID
+	Net            string // 连接类型
 	Addr           string // 地址
+	MaxClientNum   int    // 最大连接数
 	TakeClientAddr bool   // 是否在客户端首次连接时发送IP
 }
 
 //
 // 网关刷新结果
 //
-type TcpGatewayUpdateResult struct {
+type GatewayUpdateResult struct {
 	Id    uint32 // 后端ID
 	IsNew bool   // 是否是新连接
+	Net   string // 连接类型
 	Addr  string // 后端地址，如果是旧连接对应被关闭的连接地址
 	Error error  // 错误信息，只在创建新连接时产生
 }
@@ -46,18 +50,18 @@ type TcpGatewayUpdateResult struct {
 // 在指定地址和端口创建一个网关前端，连接到指定的网关后端，并等待客户端接入。
 // 新接入的客户端首先需要发送一个uint32类型的后端ID，选择客户端实际所要连接的后端。
 //
-func NewTcpGatewayFrontend(addr string, pack, maxPackSize int, backends []*TcpGatewayBackendInfo) (*TcpGatewayFrontend, error) {
-	server, err := Listen(addr, pack, pack+4, maxPackSize)
+func NewGatewayFrontend(net, addr string, pack, maxPackSize int, backends []*GatewayBackendInfo) (*GatewayFrontend, error) {
+	server, err := Listen(net, addr, pack, pack+4, maxPackSize)
 
 	if err != nil {
 		return nil, err
 	}
 
-	var this = &TcpGatewayFrontend{
+	var this = &GatewayFrontend{
 		server:      server,
 		pack:        pack,
 		maxPackSize: maxPackSize,
-		links:       make(map[uint32]*tcpGatewayLink),
+		links:       make(map[uint32]*GatewayLink),
 	}
 
 	this.UpdateBackends(backends)
@@ -75,43 +79,13 @@ func NewTcpGatewayFrontend(addr string, pack, maxPackSize int, backends []*TcpGa
 					conn.Close()
 				}()
 
-				var link, client = this.clientInit(conn)
+				var client = this.clientInit(conn)
 
-				if link == nil || client == nil {
+				if client == nil {
 					return
 				}
 
-				defer func() {
-					client.Close()
-				}()
-
-				if link.takeClientAddr {
-					var addr = conn.conn.RemoteAddr().String()
-					var addrMsg = conn.NewPackage(4 + 2 + len(addr))
-
-					addrMsg.WriteUint32(client.id).WriteUint8(uint8(len(addr))).WriteBytes([]byte(addr))
-
-					link.SendToBackend(addrMsg.buff)
-				}
-
-				for {
-					var msg = conn.Read()
-
-					if msg == nil {
-						break
-					}
-
-					setUint(msg, pack, len(msg)-pack)
-
-					setUint32(msg[pack:], client.id)
-
-					if this.counterOn {
-						atomic.AddUint64(&this.inPack, uint64(1))
-						atomic.AddUint64(&this.inByte, uint64(len(msg)))
-					}
-
-					link.SendToBackend(msg)
-				}
+				client.Transport()
 			}()
 		}
 	}()
@@ -119,42 +93,40 @@ func NewTcpGatewayFrontend(addr string, pack, maxPackSize int, backends []*TcpGa
 	return this, nil
 }
 
-func (this *TcpGatewayFrontend) clientInit(conn *TcpConn) (link *tcpGatewayLink, client *tcpGatewayClient) {
+func (this *GatewayFrontend) clientInit(conn *Conn) *GatewayClient {
 	var (
 		serverIdMsg []byte
 		serverId    uint32
 	)
 
 	if serverIdMsg = conn.Read(); len(serverIdMsg) != this.pack+4+4 {
-		return
+		return nil
 	}
 
 	serverId = getUint32(serverIdMsg[this.pack+4:])
 
-	if link = this.getLink(serverId); link == nil {
-		return
+	if link := this.getLink(serverId); link != nil {
+		return link.AddClient(conn)
 	}
 
-	client = link.AddClient(conn)
-
-	return
+	return nil
 }
 
-func (this *TcpGatewayFrontend) addLink(id uint32, link *tcpGatewayLink) {
+func (this *GatewayFrontend) addLink(id uint32, link *GatewayLink) {
 	this.linksMutex.Lock()
 	defer this.linksMutex.Unlock()
 
 	this.links[id] = link
 }
 
-func (this *TcpGatewayFrontend) delLink(id uint32) {
+func (this *GatewayFrontend) delLink(id uint32) {
 	this.linksMutex.Lock()
 	defer this.linksMutex.Unlock()
 
 	delete(this.links, id)
 }
 
-func (this *TcpGatewayFrontend) getLink(id uint32) *tcpGatewayLink {
+func (this *GatewayFrontend) getLink(id uint32) *GatewayLink {
 	this.linksMutex.RLock()
 	defer this.linksMutex.RUnlock()
 
@@ -165,11 +137,11 @@ func (this *TcpGatewayFrontend) getLink(id uint32) *tcpGatewayLink {
 	return nil
 }
 
-func (this *TcpGatewayFrontend) removeOldLinks(backends []*TcpGatewayBackendInfo) []*TcpGatewayUpdateResult {
+func (this *GatewayFrontend) removeOldLinks(backends []*GatewayBackendInfo) []*GatewayUpdateResult {
 	this.linksMutex.Lock()
 	defer this.linksMutex.Unlock()
 
-	var results = make([]*TcpGatewayUpdateResult, 0, len(backends))
+	var results = make([]*GatewayUpdateResult, 0, len(backends))
 
 	for id, link := range this.links {
 		var needClose = true
@@ -183,7 +155,7 @@ func (this *TcpGatewayFrontend) removeOldLinks(backends []*TcpGatewayBackendInfo
 
 		if needClose {
 			link.Close(false)
-			results = append(results, &TcpGatewayUpdateResult{id, false, link.addr, nil})
+			results = append(results, &GatewayUpdateResult{id, false, link.net, link.addr, nil})
 		}
 	}
 
@@ -193,7 +165,7 @@ func (this *TcpGatewayFrontend) removeOldLinks(backends []*TcpGatewayBackendInfo
 //
 // 更新网关后端，移除地址有变化或者已经不在新配置里的久连接，创建久配置中没有的连接。
 //
-func (this *TcpGatewayFrontend) UpdateBackends(backends []*TcpGatewayBackendInfo) []*TcpGatewayUpdateResult {
+func (this *GatewayFrontend) UpdateBackends(backends []*GatewayBackendInfo) []*GatewayUpdateResult {
 	var results = this.removeOldLinks(backends)
 
 	for _, backend := range backends {
@@ -201,13 +173,13 @@ func (this *TcpGatewayFrontend) UpdateBackends(backends []*TcpGatewayBackendInfo
 			continue
 		}
 
-		var link, err = newTcpGatewayLink(this, backend, this.pack, this.maxPackSize)
+		var link, err = newGatewayLink(this, backend, this.pack, this.maxPackSize)
 
 		if link != nil {
 			this.addLink(backend.Id, link)
 		}
 
-		results = append(results, &TcpGatewayUpdateResult{backend.Id, true, backend.Addr, err})
+		results = append(results, &GatewayUpdateResult{backend.Id, true, backend.Net, backend.Addr, err})
 	}
 
 	return results
@@ -216,7 +188,7 @@ func (this *TcpGatewayFrontend) UpdateBackends(backends []*TcpGatewayBackendInfo
 //
 // 你懂的。
 //
-func (this *TcpGatewayFrontend) Close() {
+func (this *GatewayFrontend) Close() {
 	this.linksMutex.Lock()
 	defer this.linksMutex.Unlock()
 
@@ -230,19 +202,47 @@ func (this *TcpGatewayFrontend) Close() {
 //
 // 开启或关闭计数器
 //
-func (this *TcpGatewayFrontend) SetCounter(on bool) {
+func (this *GatewayFrontend) SetCounter(on bool) {
 	this.counterOn = on
 }
 
 //
-// 开启或关闭计数器
+// 获取计数器
 //
-func (this *TcpGatewayFrontend) GetCounter() (inPack, inByte, outPack, outByte, broPack, broByte uint64) {
+func (this *GatewayFrontend) GetCounter() (inPack, inByte, outPack, outByte, broPack, broByte uint64) {
 	inPack = atomic.LoadUint64(&this.inPack)
 	inByte = atomic.LoadUint64(&this.inByte)
 	outPack = atomic.LoadUint64(&this.outPack)
 	outByte = atomic.LoadUint64(&this.outByte)
 	broPack = atomic.LoadUint64(&this.broPack)
 	broByte = atomic.LoadUint64(&this.broByte)
+
+	return
+}
+
+func (this *GatewayFrontend) GetCounterPerSecond() (inPack, inByte, outPack, outByte, broPack, broByte uint64) {
+	inPack1 := atomic.LoadUint64(&this.inPack)
+	inByte1 := atomic.LoadUint64(&this.inByte)
+	outPack1 := atomic.LoadUint64(&this.outPack)
+	outByte1 := atomic.LoadUint64(&this.outByte)
+	broPack1 := atomic.LoadUint64(&this.broPack)
+	broByte1 := atomic.LoadUint64(&this.broByte)
+
+	time.Sleep(time.Second)
+
+	inPack2 := atomic.LoadUint64(&this.inPack)
+	inByte2 := atomic.LoadUint64(&this.inByte)
+	outPack2 := atomic.LoadUint64(&this.outPack)
+	outByte2 := atomic.LoadUint64(&this.outByte)
+	broPack2 := atomic.LoadUint64(&this.broPack)
+	broByte2 := atomic.LoadUint64(&this.broByte)
+
+	inPack = inPack2 - inPack1
+	inByte = inByte2 - inByte1
+	outPack = outPack2 - outPack1
+	outByte = outByte2 - outByte1
+	broPack = broPack2 - broPack1
+	broByte = broByte2 - broByte1
+
 	return
 }

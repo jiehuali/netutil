@@ -5,17 +5,17 @@ import (
 	"unsafe"
 )
 
-type TcpOutput struct {
-	owner *TcpConn
+type Output struct {
+	owner *Conn
 	buff  []byte
 	Data  []byte
 }
 
-func (this *TcpOutput) Send() error {
+func (this *Output) Send() error {
 	return this.owner.sendRaw(this.buff)
 }
 
-func (this *TcpOutput) WriteUint(pack int, value uint64) *TcpOutput {
+func (this *Output) WriteUint(pack int, value uint64) *Output {
 	switch pack {
 	case 1:
 		this.WriteUint8(uint8(value))
@@ -32,7 +32,7 @@ func (this *TcpOutput) WriteUint(pack int, value uint64) *TcpOutput {
 	return this
 }
 
-func (this *TcpOutput) WriteInt8(value int8) *TcpOutput {
+func (this *Output) WriteInt8(value int8) *Output {
 	if len(this.Data) < 1 {
 		panic("index out of range")
 	}
@@ -41,7 +41,7 @@ func (this *TcpOutput) WriteInt8(value int8) *TcpOutput {
 	return this
 }
 
-func (this *TcpOutput) WriteUint8(value uint8) *TcpOutput {
+func (this *Output) WriteUint8(value uint8) *Output {
 	if len(this.Data) < 1 {
 		panic("index out of range")
 	}
@@ -50,7 +50,7 @@ func (this *TcpOutput) WriteUint8(value uint8) *TcpOutput {
 	return this
 }
 
-func (this *TcpOutput) WriteInt16(value int16) *TcpOutput {
+func (this *Output) WriteInt16(value int16) *Output {
 	if len(this.Data) < 2 {
 		panic("index out of range")
 	}
@@ -59,7 +59,7 @@ func (this *TcpOutput) WriteInt16(value int16) *TcpOutput {
 	return this
 }
 
-func (this *TcpOutput) WriteUint16(value uint16) *TcpOutput {
+func (this *Output) WriteUint16(value uint16) *Output {
 	if len(this.Data) < 2 {
 		panic("index out of range")
 	}
@@ -68,7 +68,7 @@ func (this *TcpOutput) WriteUint16(value uint16) *TcpOutput {
 	return this
 }
 
-func (this *TcpOutput) WriteInt32(value int32) *TcpOutput {
+func (this *Output) WriteInt32(value int32) *Output {
 	if len(this.Data) < 4 {
 		panic("index out of range")
 	}
@@ -77,7 +77,7 @@ func (this *TcpOutput) WriteInt32(value int32) *TcpOutput {
 	return this
 }
 
-func (this *TcpOutput) WriteUint32(value uint32) *TcpOutput {
+func (this *Output) WriteUint32(value uint32) *Output {
 	if len(this.Data) < 4 {
 		panic("index out of range")
 	}
@@ -86,7 +86,7 @@ func (this *TcpOutput) WriteUint32(value uint32) *TcpOutput {
 	return this
 }
 
-func (this *TcpOutput) WriteInt64(value int64) *TcpOutput {
+func (this *Output) WriteInt64(value int64) *Output {
 	if len(this.Data) < 8 {
 		panic("index out of range")
 	}
@@ -95,7 +95,7 @@ func (this *TcpOutput) WriteInt64(value int64) *TcpOutput {
 	return this
 }
 
-func (this *TcpOutput) WriteUint64(value uint64) *TcpOutput {
+func (this *Output) WriteUint64(value uint64) *Output {
 	if len(this.Data) < 8 {
 		panic("index out of range")
 	}
@@ -104,7 +104,7 @@ func (this *TcpOutput) WriteUint64(value uint64) *TcpOutput {
 	return this
 }
 
-func (this *TcpOutput) WriteBytes(data []byte) *TcpOutput {
+func (this *Output) WriteBytes(data []byte) *Output {
 	if len(this.Data) < len(data) {
 		panic("index out of range")
 	}
@@ -113,50 +113,50 @@ func (this *TcpOutput) WriteBytes(data []byte) *TcpOutput {
 	return this
 }
 
-func (this *TcpOutput) WriteBytes8(data []byte) *TcpOutput {
+func (this *Output) WriteBytes8(data []byte) *Output {
 	this.WriteUint8(uint8(len(data)))
 	this.WriteBytes(data)
 	return this
 }
 
-func (this *TcpOutput) WriteBytes16(data []byte) *TcpOutput {
+func (this *Output) WriteBytes16(data []byte) *Output {
 	this.WriteUint16(uint16(len(data)))
 	this.WriteBytes(data)
 	return this
 }
 
-func (this *TcpOutput) WriteBytes32(data []byte) *TcpOutput {
+func (this *Output) WriteBytes32(data []byte) *Output {
 	this.WriteUint32(uint32(len(data)))
 	this.WriteBytes(data)
 	return this
 }
 
-type TcpInput struct {
+type Input struct {
 	Data []byte
 }
 
-func NewTcpInput(data []byte) *TcpInput {
-	return &TcpInput{data}
+func NewInput(data []byte) *Input {
+	return &Input{data}
 }
 
-func (this *TcpInput) Seek(n int) *TcpInput {
+func (this *Input) Seek(n int) *Input {
 	this.Data = this.Data[n:]
 	return this
 }
 
-func (this *TcpInput) ReadInt8() int8 {
+func (this *Input) ReadInt8() int8 {
 	var result = int8(this.Data[0])
 	this.Data = this.Data[1:]
 	return result
 }
 
-func (this *TcpInput) ReadUint8() uint8 {
+func (this *Input) ReadUint8() uint8 {
 	var result = uint8(this.Data[0])
 	this.Data = this.Data[1:]
 	return result
 }
 
-func (this *TcpInput) ReadInt16() int16 {
+func (this *Input) ReadInt16() int16 {
 	if len(this.Data) < 2 {
 		panic("index out of range")
 	}
@@ -165,7 +165,7 @@ func (this *TcpInput) ReadInt16() int16 {
 	return result
 }
 
-func (this *TcpInput) ReadUint16() uint16 {
+func (this *Input) ReadUint16() uint16 {
 	if len(this.Data) < 2 {
 		panic("index out of range")
 	}
@@ -174,7 +174,7 @@ func (this *TcpInput) ReadUint16() uint16 {
 	return result
 }
 
-func (this *TcpInput) ReadInt32() int32 {
+func (this *Input) ReadInt32() int32 {
 	if len(this.Data) < 4 {
 		panic("index out of range")
 	}
@@ -183,7 +183,7 @@ func (this *TcpInput) ReadInt32() int32 {
 	return result
 }
 
-func (this *TcpInput) ReadUint32() uint32 {
+func (this *Input) ReadUint32() uint32 {
 	if len(this.Data) < 4 {
 		panic("index out of range")
 	}
@@ -192,7 +192,7 @@ func (this *TcpInput) ReadUint32() uint32 {
 	return result
 }
 
-func (this *TcpInput) ReadInt64() int64 {
+func (this *Input) ReadInt64() int64 {
 	if len(this.Data) < 8 {
 		panic("index out of range")
 	}
@@ -201,7 +201,7 @@ func (this *TcpInput) ReadInt64() int64 {
 	return result
 }
 
-func (this *TcpInput) ReadUint64() uint64 {
+func (this *Input) ReadUint64() uint64 {
 	if len(this.Data) < 8 {
 		panic("index out of range")
 	}
@@ -210,23 +210,23 @@ func (this *TcpInput) ReadUint64() uint64 {
 	return result
 }
 
-func (this *TcpInput) ReadBytes(n int) []byte {
+func (this *Input) ReadBytes(n int) []byte {
 	var result = this.Data[:n]
 	this.Data = this.Data[n:]
 	return result
 }
 
-func (this *TcpInput) ReadBytes8() []byte {
+func (this *Input) ReadBytes8() []byte {
 	var n = this.ReadUint8()
 	return this.ReadBytes(int(n))
 }
 
-func (this *TcpInput) ReadBytes16() []byte {
+func (this *Input) ReadBytes16() []byte {
 	var n = this.ReadUint16()
 	return this.ReadBytes(int(n))
 }
 
-func (this *TcpInput) ReadBytes32() []byte {
+func (this *Input) ReadBytes32() []byte {
 	var n = this.ReadUint32()
 	return this.ReadBytes(int(n))
 }
